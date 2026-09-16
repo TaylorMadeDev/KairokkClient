@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "com.kairokk.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"TitleScreenBackgroundMixin",
+		"LoadingOverlayMixin",
+		"MusicManagerMixin",
+		"CreateWorldScreenMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

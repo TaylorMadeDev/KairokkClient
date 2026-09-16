@@ -1,0 +1,32 @@
+package com.kairokk.client.mixin;
+
+import com.kairokk.client.ShulkCreateWorldRequest;
+import net.minecraft.client.gui.screens.worldselection.CreateWorldScreen;
+import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+/** Applies Shulk's setup choices while retaining Minecraft's world-gen/data-pack flow. */
+@Mixin(CreateWorldScreen.class)
+public abstract class CreateWorldScreenMixin {
+	@Shadow public abstract WorldCreationUiState getUiState();
+	@Shadow private void onCreate() { }
+
+	@Inject(method = "init", at = @At("TAIL"))
+	private void shulk$submitCustomWorld(CallbackInfo ci) {
+		ShulkCreateWorldRequest.Request request = ShulkCreateWorldRequest.take();
+		if (request == null) return;
+		WorldCreationUiState state = getUiState();
+		state.setName(request.name());
+		state.setGameMode(request.gameMode());
+		state.setDifficulty(request.difficulty());
+		state.setAllowCommands(request.commands());
+		state.setSeed(request.seed());
+		state.setGenerateStructures(request.structures());
+		state.setBonusChest(request.bonusChest());
+		onCreate();
+	}
+}

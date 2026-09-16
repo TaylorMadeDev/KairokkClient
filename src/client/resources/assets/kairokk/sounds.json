@@ -1,0 +1,10 @@
+{
+  "ui.cancel": { "sounds": ["kairokk:ui/cancel"] },
+  "ui.close": { "sounds": ["kairokk:ui/close"] },
+  "ui.error": { "sounds": ["kairokk:ui/error"] },
+  "ui.hover": { "sounds": ["kairokk:ui/hover"] },
+	"ui.notification": { "sounds": ["kairokk:ui/notification"] },
+  "ui.open": { "sounds": ["kairokk:ui/open"] },
+  "ui.select": { "sounds": ["kairokk:ui/select"] },
+  "ui.swipe": { "sounds": ["kairokk:ui/swipe"] }
+}

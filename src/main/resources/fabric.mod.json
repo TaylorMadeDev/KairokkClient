@@ -1,0 +1,31 @@
+{
+	"schemaVersion": 1,
+	"id": "kairokk",
+	"version": "${version}",
+	"name": "Kairokk",
+	"description": "A client-side Minecraft experience built on Fabric.",
+	"authors": [
+		"Kairokk"
+	],
+	"license": "CC0-1.0",
+	"icon": "assets/kairokk/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.kairokk.KairokkClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "kairokk.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*",
+		"modernui": ">=3.13.0"
+	}
+}
