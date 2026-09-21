@@ -1,0 +1,168 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+enum SubscriptionPlan {
+  FREE
+  PRO
+  LIFETIME
+}
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+}
+enum ClientStatus {
+  CONNECTED
+  IDLE
+  DISCONNECTED
+}
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  username String @unique @db.VarChar(32)
+  email String @unique @db.VarChar(320)
+  passwordHash String
+  role UserRole @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lastLoginAt DateTime?
+  isDisabled Boolean @default(false)
+  subscription Subscription?
+  devices Device[]
+  sessions Session[]
+  clients ClientInstance[]
+  configs Config[]
+  scripts Script[]
+  statistics PlayerStatistics?
+  events ActivityEvent[]
+  settings UserSettings?
+  notifications Notification[]
+  screenshots Screenshot[]
+}
+model Subscription {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+  plan SubscriptionPlan @default(FREE)
+  status SubscriptionStatus @default(ACTIVE)
+  startedAt DateTime @default(now())
+  expiresAt DateTime?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model Device {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  deviceFingerprintHash String @db.VarChar(128)
+  deviceName String @db.VarChar(128)
+  platform String @db.VarChar(64)
+  firstSeenAt DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  isAuthorized Boolean @default(true)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clients ClientInstance[]
+  @@unique([userId, deviceFingerprintHash])
+}
+model Session {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  refreshTokenHash String @unique @db.VarChar(128)
+  ipHash String? @db.VarChar(128)
+  userAgent String? @db.VarChar(512)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model ClientInstance {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  deviceId String @db.Uuid
+  clientVersion String @db.VarChar(64)
+  minecraftVersion String @db.VarChar(64)
+  serverAddress String? @db.VarChar(255)
+  connectedAt DateTime @default(now())
+  lastHeartbeatAt DateTime @default(now())
+  latencyMs Int?
+  status ClientStatus @default(CONNECTED)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  @@index([userId, status])
+}
+model Config {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  name String @db.VarChar(100)
+  data Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  revision Int @default(1)
+  lastUsedAt DateTime?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, name])
+}
+model Script {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  name String @db.VarChar(100)
+  content String
+  enabled Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model UserSettings {
+  userId String @id @db.Uuid
+  data Json
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model Notification {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  type String @db.VarChar(100)
+  title String @db.VarChar(200)
+  body String @db.VarChar(1000)
+  metadata Json?
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+}
+model Screenshot {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  storageKey String @unique @db.VarChar(512)
+  serverAddress String? @db.VarChar(255)
+  width Int
+  height Int
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, createdAt])
+}
+model PlayerStatistics {
+  userId String @id @db.Uuid
+  playTime BigInt @default(0)
+  sessions Int @default(0)
+  blocksTravelled Float @default(0)
+  macrosUsed Int @default(0)
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model ActivityEvent {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  type String @db.VarChar(100)
+  metadata Json?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, createdAt])
+}

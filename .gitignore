@@ -1,40 +1,39 @@
-# gradle
-
+# Local build output and editor state
 .gradle/
-build/
-out/
-classes/
-
-# eclipse
-
-*.launch
-
-# idea
-
+**/.gradle/
+**/build/
+**/out/
+**/classes/
+**/dist/
 .idea/
+**/.idea/
+.vscode/
+**/.vscode/
 *.iml
 *.ipr
 *.iws
+*.launch
+.DS_Store
 
-# vscode
-
-.settings/
-.vscode/
-bin/
-.classpath
-.project
-
-# macos
-
-*.DS_Store
-
-# fabric
-
+# Java, Fabric, and Minecraft runtime data
 run/
-
-# java
-
+**/run/
 hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# JavaScript dependencies and generated test output
+node_modules/
+**/node_modules/
+.playwright-cli/
+**/.playwright-cli/
+output/
+
+# Application secrets and local data
+.env
+.env.*
+!.env.example
+.data/
+**/.data/
+*.local
