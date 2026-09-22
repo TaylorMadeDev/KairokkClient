@@ -30,12 +30,22 @@ public final class SprintJumpExecutor implements MovementExecutor {
 		Vec3 delta = target.position().subtract(client.player.position());
 		double distance = delta.horizontalDistance();
 		double horizontalSpeed = client.player.getDeltaMovement().horizontalDistance();
+		boolean narrowLanding = com.kairokk.client.pathfinder.pathfinding.Pathfinder
+				.isWaterParkourLanding(client.level, target.position());
 		float yawError = Math.abs(rotation.face(client.player, delta));
-		boolean alignedToMove = yawError < 70.0f;
-		boolean alignedToSprint = yawError < 25.0f;
-		boolean alignedToJump = yawError < 10.0f;
+		boolean alignedToMove = yawError < 12.0f;
+		boolean alignedToSprint = yawError < 8.0f;
+		boolean alignedToJump = yawError < 5.0f;
 
 		if (!client.player.onGround()) {
+			if (narrowLanding) {
+				// Keep steering through the flight; braking as early as the generic
+				// jump does leaves the player short of a narrow lily pad.
+				client.options.keyUp.setDown(alignedToMove && distance > Math.max(.28, horizontalSpeed * 1.4));
+				client.options.keySprint.setDown(alignedToSprint && distance > 1.4);
+				client.options.keyJump.setDown(false);
+				return;
+			}
 			double remainingFlight = predictRemainingFlightDistance(client.player.getDeltaMovement(),
 					client.player.getY(), target.position().y);
 			if (distance <= remainingFlight + LANDING_RESERVE) finalApproach = true;
@@ -45,14 +55,23 @@ public final class SprintJumpExecutor implements MovementExecutor {
 			return;
 		}
 
-		boolean gapJump = needsImmediateGapJump(client, delta);
+		// The planner may choose an offset pad (for example +1,+2). Looking only
+		// at the dominant cardinal step misses that water gap and walks off.
+		boolean gapJump = narrowLanding || needsImmediateGapJump(client, delta);
 		MovementProfile profile = MovementProfile.from(client.player);
+		if (narrowLanding && alignedToJump && hasSupportAhead(client, delta, Math.max(.40, horizontalSpeed * 2.0))) {
+			// Build speed on the current shore or pad, then jump before its edge.
+			client.options.keyUp.setDown(true);
+			client.options.keySprint.setDown(true);
+			client.options.keyJump.setDown(false);
+			return;
+		}
 		double predictedJump = predictFullJumpDistance(horizontalSpeed, profile);
 		boolean roomForAnotherJump = !finalApproach && distance > predictedJump + LANDING_RESERVE;
 		if ((gapJump || roomForAnotherJump) && alignedToJump) {
 			client.options.keyUp.setDown(true);
 			// A close one-block gap needs a controlled jump, not a full-speed launch.
-			client.options.keySprint.setDown(!gapJump || distance > 3.25);
+			client.options.keySprint.setDown(narrowLanding || !gapJump || distance > 3.25);
 			client.options.keyJump.setDown(true);
 			return;
 		}
@@ -108,6 +127,14 @@ public final class SprintJumpExecutor implements MovementExecutor {
 		BlockPos aheadFeet = client.player.blockPosition().offset(stepX, 0, stepZ);
 		BlockPos support = aheadFeet.below();
 		return client.level.getBlockState(support).getCollisionShape(client.level, support).isEmpty();
+	}
+
+	private static boolean hasSupportAhead(Minecraft client, Vec3 delta, double distance) {
+		if (client.player == null || client.level == null || delta.horizontalDistanceSqr() < 1.0e-6) return false;
+		Vec3 direction = new Vec3(delta.x, 0, delta.z).normalize();
+		Vec3 ahead = client.player.position().add(direction.scale(distance));
+		BlockPos support = BlockPos.containing(ahead.x, client.player.getY() - 0.08, ahead.z);
+		return !client.level.getBlockState(support).getCollisionShape(client.level, support).isEmpty();
 	}
 
 	@Override

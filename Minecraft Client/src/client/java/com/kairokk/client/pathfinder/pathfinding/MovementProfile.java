@@ -50,7 +50,13 @@ public record MovementProfile(
 
 	/** Conservative maximum continuous gap span for one sprint jump. */
 	public int maxGapBlocks() {
-		return Math.max(2, Math.min(8, (int) Math.floor(predictJumpDistance() - com.kairokk.client.pathfinder.PathfinderOptions.jumpMargin)));
+		// Node positions are block centres, but a real sprint jump launches near
+		// the source edge and lands before the far edge. Account for that run-up
+		// and landing room so normal four-block lily-pad hops are searched.
+		// Lily pads use the tighter pad-landing margin in Pathfinder, so retain
+		// enough scan radius to discover those otherwise-valid hops.
+		double centerToCenterReach = predictJumpDistance() + 0.85 - 0.08;
+		return Math.max(2, Math.min(8, (int) Math.floor(centerToCenterReach)));
 	}
 
 	public double predictJumpDistance() {

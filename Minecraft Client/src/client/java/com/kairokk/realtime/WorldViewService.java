@@ -26,20 +26,26 @@ import java.util.function.BiConsumer;
 
 /** Subscription-driven, ephemeral world collector. Minecraft objects are read only on the client thread. */
 public final class WorldViewService {
-	private static final int MAX_RADIUS = 8, DEFAULT_RADIUS = 4, MAX_ENCODER_QUEUE = 24;
+	private static final int MAX_RADIUS = 8, DEFAULT_RADIUS = 4, MAX_ENCODER_QUEUE = 24, MAX_IN_FLIGHT = 6;
 	private final BiConsumer<String, JsonObject> sender;
 	private final ExecutorService encoder = Executors.newSingleThreadExecutor(r -> { Thread t = new Thread(r, "kairokk-world-encoder"); t.setDaemon(true); return t; });
 	private final ArrayBlockingQueue<ChunkSnapshot> encodeQueue = new ArrayBlockingQueue<>(MAX_ENCODER_QUEUE);
 	private final ArrayDeque<ChunkCoordinate> pending = new ArrayDeque<>();
 	private final Set<ChunkCoordinate> synchronizedChunks = ConcurrentHashMap.newKeySet();
+	private final Map<ChunkCoordinate, Long> inFlight = new ConcurrentHashMap<>();
 	private final Map<String, EntitySnapshot> synchronizedEntities = new HashMap<>();
 	private boolean subscribed; private int radius = DEFAULT_RADIUS, ticks; private volatile int generation; private String dimension; private int centerX = Integer.MIN_VALUE, centerZ = Integer.MIN_VALUE, lastPathHash;
+	private PlayerState lastPlayerState; private long lastPlayerSentAt;
 
 	public WorldViewService(BiConsumer<String, JsonObject> sender) { this.sender = sender; encoder.execute(this::encodeLoop); }
 	public void subscribe(int requestedRadius) { radius = Math.max(1, Math.min(MAX_RADIUS, requestedRadius)); subscribed = true; reset("SUBSCRIBED"); }
 	public void unsubscribe() { subscribed = false; clear(); }
 	public void disconnected() { subscribed = false; clear(); }
 	public boolean active() { return subscribed; }
+	public void acknowledgeChunk(String key, long revision) {
+		ChunkCoordinate coordinate = ChunkCoordinate.fromKey(key);
+		if (coordinate != null && inFlight.remove(coordinate, revision) && Math.abs(coordinate.x-centerX) <= radius && Math.abs(coordinate.z-centerZ) <= radius) synchronizedChunks.add(coordinate);
+	}
 
 	public void tick(Minecraft client) {
 		if (!subscribed) return;
@@ -48,8 +54,9 @@ public final class WorldViewService {
 		if (!currentDimension.equals(dimension)) { dimension = currentDimension; reset("DIMENSION_CHANGED"); }
 		int cx = client.player.blockPosition().getX() >> 4, cz = client.player.blockPosition().getZ() >> 4;
 		if (cx != centerX || cz != centerZ) updateWindow(client, cx, cz);
-		if (!pending.isEmpty() && encodeQueue.remainingCapacity() > 0) capture(client, pending.removeFirst());
-		ticks++; if (ticks % 3 == 0) sendPlayer(client); if (ticks % 5 == 0) sendEntities(client); if (ticks % 20 == 0) { sendMetadata(client); sendPath(); }
+		if (!pending.isEmpty() && inFlight.size() < MAX_IN_FLIGHT && encodeQueue.remainingCapacity() > 0) capture(client, pending.removeFirst());
+		if (ticks % 40 == 0) updateWindow(client, cx, cz);
+		ticks++; if (ticks % 2 == 0) sendPlayer(client); if (ticks % 5 == 0) sendEntities(client); if (ticks % 20 == 0) { sendMetadata(client); sendPath(); }
 	}
 
 	private void reset(String reason) {
@@ -58,11 +65,14 @@ public final class WorldViewService {
 		dimension = client.level.dimension().identifier().toString(); JsonObject init = new JsonObject(); init.addProperty("sessionId", UUID.randomUUID().toString()); init.addProperty("expectedChunks", (radius * 2 + 1) * (radius * 2 + 1)); init.addProperty("centerX", initialCenterX); init.addProperty("centerZ", initialCenterZ); init.add("metadata", metadata(client)); sender.accept("WORLD_INIT", init); updateWindow(client, initialCenterX, initialCenterZ);
 	}
 
-	private void clear() { generation++; pending.clear(); encodeQueue.clear(); synchronizedChunks.clear(); synchronizedEntities.clear(); centerX = Integer.MIN_VALUE; centerZ = Integer.MIN_VALUE; dimension = null; }
+	private void clear() { generation++; pending.clear(); encodeQueue.clear(); inFlight.clear(); synchronizedChunks.clear(); synchronizedEntities.clear(); lastPlayerState = null; lastPlayerSentAt = 0; centerX = Integer.MIN_VALUE; centerZ = Integer.MIN_VALUE; dimension = null; }
 	private void updateWindow(Minecraft client, int cx, int cz) {
 		centerX = cx; centerZ = cz; Set<ChunkCoordinate> wanted = new java.util.HashSet<>(); for (int dx=-radius;dx<=radius;dx++) for(int dz=-radius;dz<=radius;dz++) wanted.add(new ChunkCoordinate(cx+dx,cz+dz));
 		for (ChunkCoordinate old : Set.copyOf(synchronizedChunks)) if (!wanted.contains(old)) { synchronizedChunks.remove(old); JsonObject data=new JsonObject();data.addProperty("key",old.key());sender.accept("WORLD_CHUNK_UNLOAD",data); }
-		pending.removeIf(coordinate -> !wanted.contains(coordinate)); wanted.stream().filter(coordinate -> !synchronizedChunks.contains(coordinate) && !pending.contains(coordinate)).sorted(Comparator.comparingInt(coordinate -> coordinate.distanceSquared(cx,cz))).forEach(pending::addLast);
+		pending.removeIf(coordinate -> !wanted.contains(coordinate));
+		long now = System.currentTimeMillis();
+		inFlight.entrySet().removeIf(entry -> !wanted.contains(entry.getKey()) || now - entry.getValue() > 15_000);
+		wanted.stream().filter(coordinate -> !synchronizedChunks.contains(coordinate) && !inFlight.containsKey(coordinate) && !pending.contains(coordinate)).sorted(Comparator.comparingInt(coordinate -> coordinate.distanceSquared(cx,cz))).forEach(pending::addLast);
 	}
 
 	private void capture(Minecraft client, ChunkCoordinate coordinate) {
@@ -71,26 +81,43 @@ public final class WorldViewService {
 		for (int lx = 0; lx < 16; lx++) for (int lz = 0; lz < 16; lz++) {
 			int x = (coordinate.x << 4) + lx, z = (coordinate.z << 4) + lz;
 			int canopyTop = client.level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
-			int scanFloor = Math.max(client.level.getMinY(), canopyTop - 48), terrainY = scanFloor;
-			for (int y = canopyTop - 1; y >= scanFloor; y--) {
-				BlockState candidate = client.level.getBlockState(new BlockPos(x, y, z));
-				if (candidate.isAir()) continue;
-				String kind = classify(candidate);
-				if (!kind.equals("leaves") && !kind.equals("wood") && !kind.equals("plant") && !kind.equals("water")) { terrainY = y; break; }
+			int playerY = client.player.blockPosition().getY();
+			boolean underground = canopyTop > playerY + 12;
+			int top = underground ? Math.min(canopyTop, playerY + 13) : canopyTop;
+			int bottom;
+			if (underground) bottom = Math.max(client.level.getMinY(), playerY - 8);
+			else {
+				int scanFloor = Math.max(client.level.getMinY(), canopyTop - 48), terrainY = canopyTop - 1;
+				for (int y = canopyTop - 1; y >= scanFloor; y--) {
+					BlockState candidate = client.level.getBlockState(new BlockPos(x, y, z));
+					if (candidate.isAir()) continue;
+					String kind = classify(candidate);
+					if (!kind.equals("leaves") && !kind.equals("wood") && !kind.equals("plant") && !kind.equals("water")) { terrainY = y; break; }
+				}
+				bottom = Math.max(client.level.getMinY(), terrainY - 3);
 			}
-			int bottom = Math.max(client.level.getMinY(), terrainY - 3);
-			for (int y = bottom; y < canopyTop; y++) {
+			for (int y = bottom; y < top; y++) {
 				BlockState state = client.level.getBlockState(new BlockPos(x, y, z));
 				if (state.isAir()) continue;
-				JsonObject block = new JsonObject(); block.addProperty("x", x); block.addProperty("y", y); block.addProperty("z", z); block.addProperty("kind", classify(state)); blocks.add(block);
+				JsonObject block = new JsonObject(); block.addProperty("x", x); block.addProperty("y", y); block.addProperty("z", z); block.addProperty("kind", BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString()); blocks.add(block);
 			}
 		}
-		if (!encodeQueue.offer(new ChunkSnapshot(generation, coordinate, blocks))) pending.addFirst(coordinate);
+		long revision = System.currentTimeMillis();
+		inFlight.put(coordinate, revision);
+		if (!encodeQueue.offer(new ChunkSnapshot(generation, coordinate, revision, blocks))) { inFlight.remove(coordinate, revision); pending.addFirst(coordinate); }
 	}
 
-	private void encodeLoop() { while (!Thread.currentThread().isInterrupted()) try { ChunkSnapshot snapshot=encodeQueue.take(); if(snapshot.generation!=generation)continue; JsonObject chunk=new JsonObject();chunk.addProperty("key",snapshot.coordinate.key());chunk.addProperty("x",snapshot.coordinate.x);chunk.addProperty("z",snapshot.coordinate.z);chunk.addProperty("revision",System.nanoTime());chunk.add("blocks",snapshot.blocks);JsonObject data=new JsonObject();data.add("chunk",chunk);if(snapshot.generation!=generation)continue;sender.accept("WORLD_CHUNK",data);if(snapshot.generation==generation)synchronizedChunks.add(snapshot.coordinate); } catch (InterruptedException stop) { Thread.currentThread().interrupt(); } }
+	private void encodeLoop() { while (!Thread.currentThread().isInterrupted()) try { ChunkSnapshot snapshot=encodeQueue.take(); if(snapshot.generation!=generation)continue; JsonObject chunk=new JsonObject();chunk.addProperty("key",snapshot.coordinate.key());chunk.addProperty("x",snapshot.coordinate.x);chunk.addProperty("z",snapshot.coordinate.z);chunk.addProperty("revision",snapshot.revision);chunk.add("blocks",snapshot.blocks);JsonObject data=new JsonObject();data.add("chunk",chunk);if(snapshot.generation!=generation)continue;sender.accept("WORLD_CHUNK",data); } catch (InterruptedException stop) { Thread.currentThread().interrupt(); } }
 
-	private void sendPlayer(Minecraft client) { var p=client.player; if(p==null)return; var velocity=p.getDeltaMovement(); JsonObject player=new JsonObject();player.addProperty("uuid",p.getUUID().toString());player.addProperty("name",p.getName().getString());player.addProperty("x",p.getX());player.addProperty("y",p.getY());player.addProperty("z",p.getZ());player.addProperty("yaw",p.getYRot());player.addProperty("pitch",p.getXRot());JsonObject motion=new JsonObject();motion.addProperty("x",velocity.x);motion.addProperty("y",velocity.y);motion.addProperty("z",velocity.z);player.add("velocity",motion);player.addProperty("onGround",p.onGround());player.addProperty("sprinting",p.isSprinting());player.addProperty("sneaking",p.isCrouching());player.addProperty("usingItem",p.isUsingItem());player.addProperty("swimming",p.isSwimming());player.addProperty("fallFlying",p.isFallFlying());JsonObject data=new JsonObject();data.add("player",player);sender.accept("WORLD_PLAYER_STATE",data); }
+	private void sendPlayer(Minecraft client) {
+		var p=client.player; if(p==null)return;
+		var velocity=p.getDeltaMovement();
+		PlayerState state=new PlayerState(p.getX(),p.getY(),p.getZ(),p.getYRot(),p.getXRot(),velocity.x,velocity.y,velocity.z,p.onGround(),p.isSprinting(),p.isCrouching(),p.isUsingItem(),p.isSwimming(),p.isFallFlying());
+		long now=System.currentTimeMillis();
+		if(lastPlayerState!=null && !state.differsFrom(lastPlayerState) && now-lastPlayerSentAt<2000)return;
+		lastPlayerState=state;lastPlayerSentAt=now;
+		JsonObject player=new JsonObject();player.addProperty("uuid",p.getUUID().toString());player.addProperty("name",p.getName().getString());player.addProperty("x",state.x);player.addProperty("y",state.y);player.addProperty("z",state.z);player.addProperty("yaw",state.yaw);player.addProperty("pitch",state.pitch);JsonObject motion=new JsonObject();motion.addProperty("x",state.vx);motion.addProperty("y",state.vy);motion.addProperty("z",state.vz);player.add("velocity",motion);player.addProperty("onGround",state.onGround);player.addProperty("sprinting",state.sprinting);player.addProperty("sneaking",state.sneaking);player.addProperty("usingItem",state.usingItem);player.addProperty("swimming",state.swimming);player.addProperty("fallFlying",state.fallFlying);JsonObject data=new JsonObject();data.add("player",player);sender.accept("WORLD_PLAYER_STATE",data);
+	}
 	private void sendEntities(Minecraft client) {
 		if (client.level == null || client.player == null) return;
 		double range = radius * 16.0 + 16.0, rangeSquared = range * range;
@@ -132,8 +159,11 @@ public final class WorldViewService {
 		if (id.contains("chest") || id.contains("barrel")) return "container";
 		return "stone";
 	}
-	private record ChunkCoordinate(int x,int z){String key(){return x+","+z;}int distanceSquared(int ox,int oz){int dx=x-ox,dz=z-oz;return dx*dx+dz*dz;}}
-	private record ChunkSnapshot(int generation,ChunkCoordinate coordinate,JsonArray blocks){}
+	private record ChunkCoordinate(int x,int z){String key(){return x+","+z;}int distanceSquared(int ox,int oz){int dx=x-ox,dz=z-oz;return dx*dx+dz*dz;}static ChunkCoordinate fromKey(String key){try{String[] parts=key.split(",",-1);return parts.length==2?new ChunkCoordinate(Integer.parseInt(parts[0]),Integer.parseInt(parts[1])):null;}catch(Exception ignored){return null;}}}
+	private record ChunkSnapshot(int generation,ChunkCoordinate coordinate,long revision,JsonArray blocks){}
+	private record PlayerState(double x,double y,double z,float yaw,float pitch,double vx,double vy,double vz,boolean onGround,boolean sprinting,boolean sneaking,boolean usingItem,boolean swimming,boolean fallFlying) {
+		boolean differsFrom(PlayerState other) { return Math.abs(x-other.x)>.015 || Math.abs(y-other.y)>.015 || Math.abs(z-other.z)>.015 || Math.abs(yaw-other.yaw)>.3 || Math.abs(pitch-other.pitch)>.3 || Math.abs(vx-other.vx)>.015 || Math.abs(vy-other.vy)>.015 || Math.abs(vz-other.vz)>.015 || onGround!=other.onGround || sprinting!=other.sprinting || sneaking!=other.sneaking || usingItem!=other.usingItem || swimming!=other.swimming || fallFlying!=other.fallFlying; }
+	}
 	private record EntitySnapshot(String id, String type, double x, double y, double z, Float health, boolean hostile) {
 		boolean differsFrom(EntitySnapshot previous) { return Math.abs(x - previous.x) > .02 || Math.abs(y - previous.y) > .02 || Math.abs(z - previous.z) > .02 || !java.util.Objects.equals(health, previous.health) || hostile != previous.hostile || !type.equals(previous.type); }
 	}

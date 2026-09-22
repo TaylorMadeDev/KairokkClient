@@ -53,8 +53,10 @@ public final class RotationController {
 			trackedPitch += (limitedPitch - trackedPitch) * targetBlend;
 		}
 
-		float maxSpeed = Math.max(80f, PathFinderSettings.maxSpeed);
-		float smoothTime = lerp(.075f, .30f, Math.clamp(PathFinderSettings.smooth, 0f, 1f));
+		// Navigation must finish a corner before movement resumes. The preview's
+		// slower easing makes the camera lag behind the follower at right angles.
+		float maxSpeed = Math.max(480f, PathFinderSettings.maxSpeed);
+		float smoothTime = lerp(.055f, .13f, Math.clamp(PathFinderSettings.smooth, 0f, 1f));
 		AxisResult yawResult = smoothDampAngle(yaw, trackedYaw, yawVelocity, smoothTime, maxSpeed, dt);
 		AxisResult pitchResult = smoothDamp(pitch, trackedPitch, pitchVelocity, smoothTime * 1.18f, maxSpeed * .72f, dt);
 		yawVelocity = yawResult.velocity;

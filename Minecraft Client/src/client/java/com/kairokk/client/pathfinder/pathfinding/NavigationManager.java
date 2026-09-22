@@ -29,6 +29,7 @@ public final class NavigationManager {
 	private boolean debugRenderEnabled;
 	private boolean resumeAfterSearch;
 	private int recoveryAttempts;
+	private Vec3 lastRecoveryPosition;
 
 	private NavigationManager() {
 	}
@@ -39,6 +40,11 @@ public final class NavigationManager {
 
 	public void requestPath(Minecraft client, BlockPos requestedGoal) {
 		if (client.level == null || client.player == null) return;
+		if (client.player.isInWater()) {
+			follower.stop(client); search = null; currentPath = null; resumeAfterSearch = false;
+			message(client, Component.literal("Pathfinding failed: you are touching water.").withStyle(ChatFormatting.RED));
+			return;
+		}
 		this.requestedGoal = requestedGoal.immutable();
 		if(!resumeAfterSearch)recoveryAttempts=0;
 		follower.stop(client);
@@ -50,16 +56,36 @@ public final class NavigationManager {
 		message(client, Component.literal("Movement profile: " + profile.summary()).withStyle(ChatFormatting.DARK_GRAY));
 	}
 
+	/** Dashboard navigation explicitly starts following when its route is ready. */
+	public void requestPathAndFollow(Minecraft client, BlockPos goal) {
+		recoveryAttempts = 0;
+		lastRecoveryPosition = null;
+		resumeAfterSearch = true;
+		requestPath(client, goal);
+	}
+
 	public void tick(Minecraft client) {
 		if (client.level == null || client.player == null) {
 			if (follower.isActive()) follower.stop(client);
 			search = null;
 			return;
 		}
+		if (client.player.isInWater() && (search != null || follower.isActive())) {
+			follower.stop(client); search = null; resumeAfterSearch = false;
+			currentPath = currentPath == null ? null : currentPath.withStatus(PathStatus.FAILED);
+			message(client, Component.literal("Pathfinding failed: touched water.").withStyle(ChatFormatting.RED));
+			return;
+		}
 		if(PathfinderOptions.pauseInGui && client.screen!=null){follower.releaseInputs(client);return;}
 		if(PathfinderOptions.refreshEffects && follower.isActive() && currentPath!=null){
 			MovementProfile old=currentPath.movementProfile(),now=MovementProfile.from(client.player);
-			if(Math.abs(old.jumpVelocity()-now.jumpVelocity())>.01||Math.abs(old.sprintJumpSpeed()-now.sprintJumpSpeed())>.02){resumeAfterSearch=true;requestPath(client,requestedGoal);}
+			// Sprinting and jumping change the instantaneous speed reported by
+			// getSpeed(). Replan only when the underlying movement effects change.
+			if(old.speedAmplifier()!=now.speedAmplifier()
+					|| old.jumpBoostAmplifier()!=now.jumpBoostAmplifier()
+					|| Math.abs(old.jumpVelocity()-now.jumpVelocity())>.01){
+				resumeAfterSearch=true;requestPath(client,requestedGoal);
+			}
 		}
 
 		if (search != null) {
@@ -77,7 +103,16 @@ public final class NavigationManager {
 			currentPath = currentPath == null ? null : currentPath.withStatus(PathStatus.COMPLETE);
 			message(client, Component.literal("Destination reached.").withStyle(ChatFormatting.GREEN));
 		} else if (result == FollowResult.STUCK) {
-			if(PathfinderOptions.recalculateOnStuck && requestedGoal!=null && recoveryAttempts++<3){resumeAfterSearch=true;requestPath(client,requestedGoal);return;}
+			Vec3 position = client.player.position();
+			boolean repeatedPosition = lastRecoveryPosition != null && position.distanceToSqr(lastRecoveryPosition) < 0.75 * 0.75;
+			if(PathfinderOptions.recalculateOnStuck && requestedGoal!=null && recoveryAttempts < 3 && !(repeatedPosition && recoveryAttempts >= 2)){
+				recoveryAttempts++;
+				lastRecoveryPosition = position;
+				resumeAfterSearch=true;
+				message(client, Component.literal("Stuck on route; calculating a new path from here.").withStyle(ChatFormatting.YELLOW));
+				requestPath(client,requestedGoal);
+				return;
+			}
 			currentPath = currentPath == null ? null : currentPath.withStatus(PathStatus.READY);
 			message(client, Component.literal("Path following stopped: no movement progress.").withStyle(ChatFormatting.YELLOW));
 		} else if (result == FollowResult.UNSUPPORTED) {
@@ -89,6 +124,7 @@ public final class NavigationManager {
 		debugVisitedNodes = search.visitedNodes();
 		if (!search.succeeded()) {
 			currentPath = null;
+			resumeAfterSearch = false;
 			message(client, Component.literal("Could not find a valid path to the destination.").withStyle(ChatFormatting.RED));
 			message(client, Component.literal(search.failureReason()).withStyle(ChatFormatting.DARK_GRAY));
 			search = null;

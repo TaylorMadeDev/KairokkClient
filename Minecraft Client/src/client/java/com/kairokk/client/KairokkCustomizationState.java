@@ -60,6 +60,8 @@ public final class KairokkCustomizationState {
     private static boolean compactMode;
     private static boolean nativeTitleBar;
     private static boolean interfaceSounds = true;
+    // Title music is opt-in. A launcher restart must never silently start it.
+    private static boolean titleMusicEnabled;
     private static boolean colorizeIcons = true;
     private static boolean transparentPanels;
     private static String customCss = "";
@@ -103,6 +105,7 @@ public final class KairokkCustomizationState {
     public static synchronized boolean compactMode() { return compactMode; }
     public static synchronized boolean nativeTitleBar() { return nativeTitleBar; }
     public static synchronized boolean interfaceSounds() { return interfaceSounds; }
+    public static synchronized boolean titleMusicEnabled() { return titleMusicEnabled; }
     public static synchronized boolean colorizeIcons() { return colorizeIcons; }
     public static synchronized boolean transparentPanels() { return transparentPanels; }
     public static synchronized String customCss() { return customCss; }
@@ -221,6 +224,7 @@ public final class KairokkCustomizationState {
             case "compactMode" -> compactMode = value;
             case "nativeTitleBar" -> nativeTitleBar = value;
             case "interfaceSounds" -> interfaceSounds = value;
+            case "titleMusicEnabled" -> titleMusicEnabled = value;
             case "colorizeIcons" -> colorizeIcons = value;
             case "transparentPanels" -> transparentPanels = value;
             default -> { return; }
@@ -260,6 +264,7 @@ public final class KairokkCustomizationState {
         compactMode = false;
         nativeTitleBar = false;
         interfaceSounds = true;
+        titleMusicEnabled = false;
         colorizeIcons = true;
         transparentPanels = false;
         customCss = "";
@@ -333,6 +338,7 @@ public final class KairokkCustomizationState {
         compactMode = bool(p, "compactMode", compactMode);
         nativeTitleBar = bool(p, "nativeTitleBar", nativeTitleBar);
         interfaceSounds = bool(p, "interfaceSounds", interfaceSounds);
+        titleMusicEnabled = bool(p, "titleMusicEnabled", titleMusicEnabled);
         colorizeIcons = bool(p, "colorizeIcons", colorizeIcons);
         transparentPanels = bool(p, "transparentPanels", transparentPanels);
         customCss = p.getProperty("customCss", customCss);
@@ -383,6 +389,7 @@ public final class KairokkCustomizationState {
         p.setProperty("compactMode", Boolean.toString(compactMode));
         p.setProperty("nativeTitleBar", Boolean.toString(nativeTitleBar));
         p.setProperty("interfaceSounds", Boolean.toString(interfaceSounds));
+        p.setProperty("titleMusicEnabled", Boolean.toString(titleMusicEnabled));
         p.setProperty("colorizeIcons", Boolean.toString(colorizeIcons));
         p.setProperty("transparentPanels", Boolean.toString(transparentPanels));
         p.setProperty("customCss", customCss);

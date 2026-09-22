@@ -80,31 +80,62 @@ final class PathSmoother {
 	}
 
 	private static boolean straightWalkClear(Level level, BlockPos start, BlockPos end) {
-		if (start.getY() != end.getY()) return false;
 		double dx = end.getX() - start.getX();
 		double dz = end.getZ() - start.getZ();
 		double distance = Math.sqrt(dx * dx + dz * dz);
 		int samples = Math.max(1, (int) Math.ceil(distance * 10.0));
 		BlockPos previous = start;
+		double previousSurface = Pathfinder.surfaceY(level, start);
 		for (int i = 0; i <= samples; i++) {
 			double progress = i / (double) samples;
 			double x = start.getX() + 0.5 + dx * progress;
 			double z = start.getZ() + 0.5 + dz * progress;
-			BlockPos sample = new BlockPos(
-					(int) Math.floor(x),
-					start.getY(),
-					(int) Math.floor(z));
-			if (!Pathfinder.isStandable(level, sample)) return false;
-			if (!Pathfinder.hasPlayerClearanceAt(level, x, Pathfinder.surfaceY(level, sample), z)) return false;
+			BlockPos sample = findGroundAt(level, x, z, previous.getY());
+			if (sample == null) return false;
+			double sampleSurface = highestFloorUnderFootprint(level, x, z, sample);
+			if (!Double.isFinite(sampleSurface)) return false;
+			// Dirt paths, carpets, slabs, and similar blocks differ by fractions of
+			// a block. They are continuous walking ground, not a reason to retain a
+			// grid-corner waypoint. A full rise is still left as an explicit jump.
+			double rise = sampleSurface - previousSurface;
+			if (rise > com.kairokk.client.pathfinder.PathfinderOptions.stepHeight
+					|| rise < -com.kairokk.client.pathfinder.PathfinderOptions.maxFall) return false;
+			if (!Pathfinder.hasPlayerClearanceAt(level, x, sampleSurface, z)) return false;
 			int stepX = sample.getX() - previous.getX();
 			int stepZ = sample.getZ() - previous.getZ();
-			if (stepX != 0 && stepZ != 0
-					&& !Pathfinder.diagonalClear(level, previous, Integer.signum(stepX), Integer.signum(stepZ))) {
-				return false;
-			}
 			previous = sample;
+			previousSurface = sampleSurface;
 		}
 		return true;
+	}
+
+	/**
+	 * Uses the highest walkable floor touched by the player's footprint. Dirt
+	 * paths are 1/16 lower than grass; checking only the centre makes the side of
+	 * the neighbouring grass look like a wall and forces needless grid turns.
+	 */
+	private static double highestFloorUnderFootprint(Level level, double x, double z, BlockPos center) {
+		double highest = Double.NEGATIVE_INFINITY;
+		double radius = 0.30;
+		double[] offsets = {-radius, radius};
+		for (double offsetX : offsets) for (double offsetZ : offsets) {
+			BlockPos corner = findGroundAt(level, x + offsetX, z + offsetZ, center.getY());
+			if (corner == null) return Double.NaN;
+			highest = Math.max(highest, Pathfinder.surfaceY(level, corner));
+		}
+		return Math.max(highest, Pathfinder.surfaceY(level, center));
+	}
+
+	/** Finds the actual walkable surface under a straight-line sample. */
+	private static BlockPos findGroundAt(Level level, double x, double z, int preferredFeetY) {
+		int blockX = (int) Math.floor(x);
+		int blockZ = (int) Math.floor(z);
+		int[] offsets = {0, 1, -1, 2, -2};
+		for (int offset : offsets) {
+			BlockPos candidate = new BlockPos(blockX, preferredFeetY + offset, blockZ);
+			if (Pathfinder.isStandable(level, candidate)) return candidate;
+		}
+		return null;
 	}
 
 	private static boolean isSafeSprintJumpRun(Level level, List<PathStep> raw, int from, int to,

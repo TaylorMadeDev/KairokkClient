@@ -21,16 +21,16 @@ public final class WalkExecutor implements MovementExecutor {
 		if (client.player == null) return;
 		Vec3 delta = target.position().subtract(client.player.position());
 		float yawError = Math.abs(rotation.face(client.player, delta));
-		boolean alignedToMove = yawError < 70.0f;
+		boolean alignedToMove = yawError < 12.0f;
 		paceAccumulator+=PathfinderOptions.walkSpeed*("Careful".equals(PathfinderOptions.movementMode)?.65f:1f);
 		boolean pace=paceAccumulator>=1f;if(pace)paceAccumulator-=1f;
 		boolean supported=true;
 		if(PathfinderOptions.safeWalk && client.level!=null && client.player.onGround() && delta.horizontalDistance()>.3){
 			Vec3 ahead=client.player.position().add(delta.normalize().scale(.55));BlockPos feet=BlockPos.containing(ahead);
-			supported=false;for(int drop=1;drop<=PathfinderOptions.maxFall+1;drop++){BlockPos p=feet.below(drop);if(!client.level.getBlockState(p).getCollisionShape(client.level,p).isEmpty()){supported=true;break;}}
+			supported=false;for(int drop=0;drop<=PathfinderOptions.maxFall+1;drop++){BlockPos p=feet.below(drop);if(!client.level.getBlockState(p).getCollisionShape(client.level,p).isEmpty()){supported=true;break;}}
 		}
 		client.options.keyUp.setDown(alignedToMove && pace && supported);
-		client.options.keySprint.setDown("Fast".equals(PathfinderOptions.movementMode)&&alignedToMove);
+		client.options.keySprint.setDown("Fast".equals(PathfinderOptions.movementMode)&&alignedToMove && supported);
 		client.options.keyJump.setDown(target.movementType() == com.kairokk.client.pathfinder.pathfinding.MovementType.JUMP
 				&& alignedToMove && client.player.onGround());
 	}

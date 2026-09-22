@@ -17,7 +17,7 @@ public final class PathFollower {
 	private Path path;
 	private int currentPointIndex;
 	private boolean active;
-	private Vec3 lastProgressPosition;
+	private double bestStableDistance;
 	private int ticksWithoutProgress;
 	private MovementType announcedMovement;
 	private final HumanRotationController rotation = new HumanRotationController();
@@ -43,7 +43,7 @@ public final class PathFollower {
 		}
 		currentPointIndex = Math.min(nearest + 1, newPath.points().size() - 1);
 		active = true;
-		lastProgressPosition = null;
+		bestStableDistance = Double.POSITIVE_INFINITY;
 		ticksWithoutProgress = 0;
 		announcedMovement = null;
 		return true;
@@ -53,10 +53,10 @@ public final class PathFollower {
 		if (!active || path == null || client.player == null) return FollowResult.IDLE;
 		Vec3 playerPosition = client.player.position();
 		while (currentPointIndex < path.points().size()
-				&& reachedTarget(playerPosition, currentPointIndex)) {
+				&& reachedTarget(playerPosition, currentPointIndex, client.player.onGround())) {
 			currentPointIndex++;
 			ticksWithoutProgress = 0;
-			lastProgressPosition = playerPosition;
+			bestStableDistance = Double.POSITIVE_INFINITY;
 		}
 
 		if (currentPointIndex >= path.points().size()) {
@@ -64,10 +64,14 @@ public final class PathFollower {
 			return FollowResult.COMPLETE;
 		}
 
-		if (lastProgressPosition == null || playerPosition.distanceTo(lastProgressPosition) > 0.20) {
-			lastProgressPosition = playerPosition;
+		// Hopping or shuffling sideways at a stair is not route progress.
+		double groundedDistance = playerPosition.distanceTo(path.points().get(currentPointIndex).position());
+		if (!client.player.onGround()) {
+			// A normal jump is neither stable progress nor evidence of being stuck.
+		} else if (groundedDistance < bestStableDistance - 0.20) {
+			bestStableDistance = groundedDistance;
 			ticksWithoutProgress = 0;
-		} else if (++ticksWithoutProgress > com.kairokk.client.pathfinder.PathfinderOptions.stuckTimeout*20) {
+		} else if (++ticksWithoutProgress > Math.min(3, com.kairokk.client.pathfinder.PathfinderOptions.stuckTimeout)*20) {
 			stop(client);
 			return FollowResult.STUCK;
 		}
@@ -84,19 +88,29 @@ public final class PathFollower {
 			boolean preparingJump = currentPointIndex + 1 < path.points().size()
 					&& path.points().get(currentPointIndex + 1).movementType() == MovementType.SPRINT_JUMP
 					&& playerPosition.distanceTo(target.position()) < 2.5;
-			client.options.keySprint.setDown(preparingJump || "Fast".equals(com.kairokk.client.pathfinder.PathfinderOptions.movementMode));
+			client.options.keySprint.setDown(client.options.keyUp.isDown() && (preparingJump || "Fast".equals(com.kairokk.client.pathfinder.PathfinderOptions.movementMode)));
 		}
 		return FollowResult.MOVING;
 	}
 
-	private boolean reachedTarget(Vec3 playerPosition, int targetIndex) {
+	private boolean reachedTarget(Vec3 playerPosition, int targetIndex, boolean onGround) {
 		Vec3 target = path.points().get(targetIndex).position();
+		if (path.points().get(targetIndex).movementType() == MovementType.SPRINT_JUMP) {
+			if (!onGround) return false;
+			// A narrow pad may be landed on near its edge. Once grounded in its
+			// block cell, advance instead of jumping at the same pad again.
+			if (Math.floor(playerPosition.x) == Math.floor(target.x)
+					&& Math.floor(playerPosition.z) == Math.floor(target.z)
+					&& Math.abs(playerPosition.y - target.y) < 0.65) return true;
+		}
 		if (playerPosition.distanceTo(target) <= arrivalTolerance()) return true;
 		if (targetIndex <= 0 || Math.abs(playerPosition.y - target.y) > 1.0) return false;
 		Vec3 start = path.points().get(targetIndex - 1).position();
 		Vec3 segment = new Vec3(target.x - start.x, 0.0, target.z - start.z);
 		Vec3 travelled = new Vec3(playerPosition.x - start.x, 0.0, playerPosition.z - start.z);
-		return segment.lengthSqr() > 1.0e-8 && travelled.dot(segment) >= segment.lengthSqr();
+		if (segment.lengthSqr() <= 1.0e-8 || travelled.dot(segment) < segment.lengthSqr()) return false;
+		// Crossing a waypoint's plane off to the side is not reaching the stair.
+		return Math.abs(travelled.x * segment.z - travelled.z * segment.x) / Math.sqrt(segment.lengthSqr()) < 0.55;
 	}
 
 	private void announceMovement(Minecraft client, MovementType movement) {

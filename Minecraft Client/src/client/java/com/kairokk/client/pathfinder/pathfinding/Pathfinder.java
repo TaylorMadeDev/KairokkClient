@@ -12,6 +12,8 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.StairBlock;
+import net.minecraft.world.level.block.LilyPadBlock;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -27,6 +29,9 @@ public final class Pathfinder {
 	// interpolation and server collision rounding from grazing block corners.
 	private static final double PLAYER_RADIUS = 0.31;
 	private static final double PLAYER_HEIGHT = 1.80;
+	// Vanilla lily pads are a 1.5-pixel-high platform. Treating them through
+	// the generic vegetation collision path is unreliable across mappings.
+	private static final double LILY_PAD_SURFACE_HEIGHT = 1.5 / 16.0;
 	private static final int[][] DIRECTIONS = {
 			{1, 0}, {-1, 0}, {0, 1}, {0, -1},
 			{1, 1}, {1, -1}, {-1, 1}, {-1, -1}
@@ -100,10 +105,11 @@ public final class Pathfinder {
 				for (int[] direction : DIRECTIONS) {
 					exploreNeighbour(current, direction[0], direction[1]);
 				}
-				for (int[] direction : DIRECTIONS) {
-					if (direction[0] == 0 || direction[1] == 0) {
-						exploreGapJump(current, direction[0], direction[1]);
-					}
+			if (hasOpenEdge(current.position)) {
+					int range = Math.max(3, movementProfile.maxGapBlocks());
+					for (int dx = -range; dx <= range; dx++)
+						for (int dz = -range; dz <= range; dz++)
+							exploreGapJump(current, dx, dz);
 				}
 			}
 			if (open.isEmpty()) fail("No connected walking route reaches the destination.");
@@ -124,17 +130,39 @@ public final class Pathfinder {
 
 		private void exploreGapJump(PathNode current, int dx, int dz) {
 			if (!PathfinderOptions.smartJump || !com.kairokk.client.pathfinder.PathFinderSettings.sprintJump || "Careful".equals(PathfinderOptions.movementMode)) return;
+			double distance = Math.hypot(dx, dz);
+			if (distance < 1.40) return;
 			if (!hasJumpClearance(level, current.position, movementProfile)) return;
-			for (int span = 2; span <= movementProfile.maxGapBlocks(); span++) {
-				BlockPos gap = current.position.offset(dx * (span - 1), 0, dz * (span - 1));
-				if (isStandable(level, gap) || !hasJumpClearance(level, gap, movementProfile)) break;
-				BlockPos landing = findWalkingNeighbour(level, current.position.offset(dx * span, 0, dz * span),
-						0, 0, movementProfile);
-				if (landing == null || !withinSearchBounds(landing)) continue;
-				double rise = surfaceY(level, landing) - surfaceY(level, current.position);
-				if (rise > movementProfile.maxJumpRise() - 0.15 || !hasJumpClearance(level, landing, movementProfile)) continue;
-				exploreCandidate(current, landing, MovementType.SPRINT_JUMP, span / movementProfile.sprintJumpSpeed());
-			}
+			BlockPos landing = findWalkingNeighbour(level, current.position.offset(dx, 0, dz),
+					0, 0, movementProfile);
+			if (landing == null || !isStandable(level, landing) || !withinSearchBounds(landing)) return;
+			// The normal margin is deliberately cautious for broad, ordinary ground.
+			// A lily pad is a precise, all-or-nothing landing: a valid sprint jump must
+			// be allowed to use nearly the complete vanilla envelope, otherwise many
+			// natural +1/+3 and +2/+2 pad hops are ruled out before execution starts.
+			boolean waterParkourLanding = isWaterParkourLanding(level, landing);
+			double margin = waterParkourLanding ? Math.min(PathfinderOptions.jumpMargin, 0.08) : PathfinderOptions.jumpMargin;
+			// Nodes sit at block centres. The executor runs to the edge before it
+			// presses jump and can land inside the far pad, giving a normal vanilla
+			// sprint jump roughly 0.85 blocks more centre-to-centre reach.
+			double runway = (isWaterParkourLanding(level, current.position) ? 0.38 : 0.48)
+					+ (waterParkourLanding ? 0.38 : 0.48);
+			double centerToCenterReach = movementProfile.predictJumpDistance() + runway - margin;
+			if (distance > centerToCenterReach) return;
+			double rise = surfaceY(level, landing) - surfaceY(level, current.position);
+			if (rise > movementProfile.maxJumpRise() - 0.15 || rise < -PathfinderOptions.maxFall
+					|| !hasJumpClearance(level, landing, movementProfile)
+					|| !clearJumpArc(level, current.position, landing, movementProfile)) return;
+			// Prefer short, repeatable pad hops over marginal long jumps.
+			double extraReach = Math.max(0.0, distance - 2.25);
+			exploreCandidate(current, landing, MovementType.SPRINT_JUMP,
+					distance * 3.0 + extraReach * extraReach * 15.0);
+		}
+
+		private boolean hasOpenEdge(BlockPos start) {
+			for (Direction direction : Direction.Plane.HORIZONTAL)
+				if (!isStandable(level, start.relative(direction))) return true;
+			return false;
 		}
 
 		private void exploreCandidate(PathNode current, BlockPos next, MovementType movementType, double edgeCost) {
@@ -180,6 +208,39 @@ public final class Pathfinder {
 		public MovementProfile movementProfile() { return movementProfile; }
 	}
 
+	private static boolean isLilyPad(Level level, BlockPos feet) {
+		return level.getBlockState(feet.below()).getBlock() instanceof LilyPadBlock;
+	}
+
+	/** A small/isolated support where missing the landing means touching water. */
+	public static boolean isWaterParkourLanding(Level level, BlockPos feet) {
+		if (isLilyPad(level, feet)) return true;
+		BlockPos support = feet.below();
+		for (Direction direction : Direction.Plane.HORIZONTAL) {
+			BlockPos neighbour = support.relative(direction);
+			if (level.getFluidState(neighbour).is(FluidTags.WATER)
+					|| level.getFluidState(neighbour.above()).is(FluidTags.WATER)) return true;
+		}
+		return false;
+	}
+
+	/** Resolves a rendered path point back to its logical feet/support node. */
+	public static boolean isWaterParkourLanding(Level level, Vec3 target) {
+		BlockPos base = BlockPos.containing(target);
+		BlockPos best = null;
+		double bestDifference = Double.POSITIVE_INFINITY;
+		for (int offset = -1; offset <= 2; offset++) {
+			BlockPos candidate = base.above(offset);
+			if (!isStandable(level, candidate)) continue;
+			double difference = Math.abs(surfaceY(level, candidate) + 0.09 - target.y);
+			if (difference < bestDifference) {
+				best = candidate;
+				bestDifference = difference;
+			}
+		}
+		return best != null && isWaterParkourLanding(level, best);
+	}
+
 	private static List<PathStep> reconstruct(PathNode end) {
 		List<PathStep> result = new ArrayList<>();
 		for (PathNode node = end; node != null; node = node.parent) {
@@ -190,12 +251,23 @@ public final class Pathfinder {
 	}
 
 	private static BlockPos findStandableNear(Level level, BlockPos origin) {
-		int[] yOffsets = {0, 1, -1, 2, -2, 3, -3};
-		for (int yOffset : yOffsets) {
-			BlockPos candidate = origin.offset(0, yOffset, 0);
-			if (isStandable(level, candidate)) return candidate.immutable();
-		}
-		return null;
+		int[] yOffsets = {0, 1, -1, 2, -2, 3, -3, 4, -4};
+		BlockPos best = null;
+		double bestScore = Double.POSITIVE_INFINITY;
+		// Clicking a flowering azalea selects a decorative, non-solid bush. Snap
+		// to a real platform nearby, such as its leaf canopy, without ever using
+		// the bush itself as a fake landing surface.
+		for (int radius = 0; radius <= 3; radius++) for (int dx = -radius; dx <= radius; dx++)
+			for (int dz = -radius; dz <= radius; dz++) {
+				if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
+				for (int yOffset : yOffsets) {
+					BlockPos candidate = origin.offset(dx, yOffset, dz);
+					if (!isStandable(level, candidate)) continue;
+					double score = dx * dx + dz * dz + Math.abs(yOffset) * .35;
+					if (score < bestScore) { best = candidate.immutable(); bestScore = score; }
+				}
+			}
+		return best;
 	}
 
 	private static BlockPos findWalkingNeighbour(Level level, BlockPos current, int dx, int dz, MovementProfile profile) {
@@ -218,8 +290,8 @@ public final class Pathfinder {
 	}
 
 	static boolean diagonalClear(Level level, BlockPos current, int dx, int dz) {
-		return hasBodyClearance(level, current.offset(dx, 0, 0))
-				&& hasBodyClearance(level, current.offset(0, 0, dz))
+		return isStandable(level, current.offset(dx, 0, 0))
+				&& isStandable(level, current.offset(0, 0, dz))
 				&& walkingSegmentClear(level, current, current.offset(dx, 0, dz));
 	}
 
@@ -255,14 +327,22 @@ public final class Pathfinder {
 		if(PathfinderOptions.avoidLava)for(Direction d:Direction.Plane.HORIZONTAL){if(level.getFluidState(feet.relative(d)).is(FluidTags.LAVA)||level.getFluidState(feet.relative(d).below()).is(FluidTags.LAVA))return false;}
 
 		BlockPos supportPos = feet.below();
+		if (isLilyPad(level, feet)) return true;
 		VoxelShape support = level.getBlockState(supportPos).getCollisionShape(level, supportPos);
 		if (support.isEmpty()) return false;
 		double top = support.max(Direction.Axis.Y);
-		return top >= 0.5 && top <= 1.001;
+		return (top >= 0.5 || isThinFloor(level, supportPos))
+				&& top <= 1.001;
+	}
+	private static boolean isThinFloor(Level level, BlockPos support) {
+		String id = BuiltInRegistries.BLOCK.getKey(level.getBlockState(support).getBlock()).getPath();
+		return id.equals("lily_pad") || id.endsWith("_carpet")
+				|| id.endsWith("_pressure_plate");
 	}
 
 	static double surfaceY(Level level, BlockPos feet) {
 		BlockPos supportPos = feet.below();
+		if (isLilyPad(level, feet)) return supportPos.getY() + LILY_PAD_SURFACE_HEIGHT;
 		VoxelShape support = level.getBlockState(supportPos).getCollisionShape(level, supportPos);
 		return support.isEmpty() ? feet.getY() : supportPos.getY() + support.max(Direction.Axis.Y);
 	}
@@ -279,7 +359,21 @@ public final class Pathfinder {
 				&& level.getBlockState(head).getCollisionShape(level, head).isEmpty()
 				&& fluidAllowed(level,feet) && fluidAllowed(level,head);
 	}
-	private static boolean fluidAllowed(Level level,BlockPos pos){var fluid=level.getFluidState(pos);return fluid.isEmpty()||fluid.is(FluidTags.WATER)&&!PathfinderOptions.avoidWater;}
+	private static boolean fluidAllowed(Level level,BlockPos pos){return level.getFluidState(pos).isEmpty();}
+	private static boolean clearJumpArc(Level level, BlockPos start, BlockPos end, MovementProfile profile) {
+		double startY = surfaceY(level, start), endY = surfaceY(level, end);
+		double distance = Math.hypot(end.getX() - start.getX(), end.getZ() - start.getZ());
+		int samples = Math.max(8, (int) Math.ceil(distance * 6));
+		for (int i = 0; i <= samples; i++) {
+			double t = i / (double) samples;
+			double x = start.getX() + 0.5 + (end.getX() - start.getX()) * t;
+			double z = start.getZ() + 0.5 + (end.getZ() - start.getZ()) * t;
+			double feetY = startY + (endY - startY) * t
+					+ Math.sin(Math.PI * t) * Math.min(0.55, profile.maxJumpRise() * 0.65);
+			if (!hasPlayerClearanceAt(level, x, feetY, z)) return false;
+		}
+		return true;
+	}
 
 	static boolean hasJumpClearance(Level level, BlockPos feet, MovementProfile profile) {
 		if (!hasBodyClearance(level, feet)) return false;

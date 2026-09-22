@@ -18,7 +18,9 @@ final class HumanRotationController {
 			return 0.0f;
 		}
 		float targetYaw = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
-		float targetPitch = (float) -Math.toDegrees(Math.atan2(delta.y, delta.horizontalDistance()));
+		// Looking up and down at every stair waypoint makes the camera fight
+		// movement. Keep navigation level while yaw follows the horizontal route.
+		float targetPitch = 0f;
 		RotationController.Result result = controller.updateTracking(player.getYRot(), player.getXRot(), targetYaw, targetPitch, 0.05f);
 		player.setYRot(result.yaw());
 		player.setXRot(result.pitch());

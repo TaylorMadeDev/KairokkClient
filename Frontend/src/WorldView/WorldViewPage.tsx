@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Box, ChevronDown, Crosshair, Eye, Focus, Fullscreen, Grid3X3, MapPin, MessageSquareText, Minus, Navigation, Plus, RotateCcw, Route, Send, Settings2, SlidersHorizontal, Users } from 'lucide-react'
-import { worldSocketUrl, type Account, type DashboardData } from '../lib/api'
+import { api, worldSocketUrl, type Account, type DashboardData } from '../lib/api'
 import { createMockWorldProvider, mockMetadata, mockPlayer } from './mockWorld'
 import { WorldScene } from './WorldScene'
 import { loadNearbyChunks, makeWorldCacheKey, saveWorldChunk } from './worldCache'
@@ -62,14 +62,35 @@ export function WorldViewPage({ data, account, onCommand }: { data: DashboardDat
     }
   }, [account.user.username, data.client.serverAddress, finishAfterQuietPeriod])
   useEffect(() => {
-    const url = worldSocketUrl(); if (!url) return
-    const socket = new WebSocket(url); let receivedWorld = false, stopMock: (() => void) | undefined
-    const fallback = window.setTimeout(() => { if (!receivedWorld && import.meta.env.DEV) { setSource('mock'); stopMock = createMockWorldProvider(packet) } }, 1800)
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'WORLD_SUBSCRIBE', radius: 4 })))
-    socket.addEventListener('message', (event) => { try { const raw = JSON.parse(String(event.data)) as { type?: string }; if (raw.type?.startsWith('world:') && raw.type !== 'world:error') { receivedWorld = true; stopMock?.(); setSource('live'); packet(raw as WorldPacket) } } catch { /* invalid world messages are ignored */ } })
-    socket.addEventListener('close', () => setSource((current) => current === 'mock' ? current : 'disconnected'))
-    return () => { window.clearTimeout(fallback); stopMock?.(); if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'WORLD_UNSUBSCRIBE' })); socket.close() }
-  }, [packet])
+    let disposed = false, socket: WebSocket | null = null, retryTimer: number | undefined, fallbackTimer: number | undefined, attempts = 0, stopMock: (() => void) | undefined
+    let receivedWorld = false
+    const connect = async () => {
+      if (disposed) return
+      if (attempts > 0) await api.dashboard().catch(() => undefined)
+      if (disposed) return
+      const url = worldSocketUrl()
+      if (!url) { setSource('disconnected'); return }
+      setSource((current) => current === 'mock' ? current : 'connecting')
+      const current = new WebSocket(url); socket = current
+      current.addEventListener('open', () => { attempts = 0; current.send(JSON.stringify({ type: 'WORLD_SUBSCRIBE', radius: 4 })) })
+      current.addEventListener('message', (event) => {
+        try {
+          const raw = JSON.parse(String(event.data)) as { type?: string }
+          if (raw.type?.startsWith('world:') && raw.type !== 'world:error') { receivedWorld = true; stopMock?.(); stopMock = undefined; window.clearTimeout(fallbackTimer); setSource('live'); packet(raw as WorldPacket) }
+        } catch { /* invalid world messages are ignored */ }
+      })
+      current.addEventListener('close', () => {
+        if (disposed || socket !== current) return
+        socket = null
+        setSource((value) => value === 'mock' ? value : 'disconnected')
+        const delay = Math.min(15_000, 1000 * 2 ** Math.min(attempts++, 4))
+        retryTimer = window.setTimeout(() => void connect(), delay)
+      })
+    }
+    if (import.meta.env.DEV && data.client.status !== 'ONLINE') fallbackTimer = window.setTimeout(() => { if (!receivedWorld && !disposed) { setSource('mock'); stopMock = createMockWorldProvider(packet) } }, 1800)
+    void connect()
+    return () => { disposed = true; window.clearTimeout(retryTimer); window.clearTimeout(fallbackTimer); stopMock?.(); if (socket) { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'WORLD_UNSUBSCRIBE' })); socket.close() } }
+  }, [packet, data.client.status])
   useEffect(() => () => window.clearTimeout(syncTimer.current), [])
   const onStats = useCallback((visibleFaces: number, fps: number) => { if (visibleFaces) setFaces(visibleFaces); if (fps) setRenderFps(fps) }, [])
   const confirmGoal = async () => { if (!goal) return; await onCommand('PATHFINDER_SET_GOAL', goal); setGoalMode(false) }
@@ -86,7 +107,7 @@ export function WorldViewPage({ data, account, onCommand }: { data: DashboardDat
       <div className="world-viewport" ref={viewer}>
         <WorldScene chunks={chunks} player={player} entities={entities} path={path} follow={follow} showEntities={showEntities} showPath={showPath} showGrid={showGrid} goalMode={goalMode} onGoal={setGoal} onContextBlock={contextBlock} apiRef={apiRef} onStats={onStats}/>
         {syncing && chunks.size < expected && <div className="wv-sync"><strong>SYNCING WORLD</strong><span>{chunks.size} / {expected} chunks</span><i><b style={{width:`${sync}%`}}/></i></div>}
-        <div className="world-info"><strong>WORLD INFORMATION</strong>{[['Dimension',metadata.dimension],['Biome',metadata.biome],['Position',`X ${player.x.toFixed(1)}  Y ${player.y.toFixed(1)}  Z ${player.z.toFixed(1)}`],['Facing',`${metadata.facing} (${Math.round(player.yaw)}°)`],['Light Level',metadata.light],['Time',metadata.time],['Entities',entities.size],['Loaded Chunks',chunks.size]].map(([key,value])=><div key={key}><span>{key}</span><b>{value}</b></div>)}</div>
+        <div className="world-info"><strong>WORLD INFORMATION</strong>{[['Dimension',metadata.dimension],['Biome',metadata.biome],['Position',`X ${player.x.toFixed(1)}  Y ${player.y.toFixed(1)}  Z ${player.z.toFixed(1)}`],['Facing',`${metadata.facing} (${Math.round(player.yaw)}°)`],['Light Level',metadata.light],['Time',metadata.time],['Entities',entities.size],['Loaded Chunks',`${chunks.size} / ${expected}`]].map(([key,value])=><div key={key}><span>{key}</span><b>{value}</b></div>)}</div>
         <div className="wv-compass"><b>N</b><b>E</b><b>S</b><b>W</b><i style={{transform:`rotate(${-player.yaw}deg)`}}/></div>
         <div className="wv-camera"><TinyButton onClick={()=>apiRef.current?.top()}>TOP</TinyButton><TinyButton onClick={()=>apiRef.current?.focus()}><Focus/></TinyButton><TinyButton onClick={()=>apiRef.current?.zoom(1)}><Plus/></TinyButton><TinyButton onClick={()=>apiRef.current?.zoom(-1)}><Minus/></TinyButton><TinyButton onClick={()=>viewer.current?.requestFullscreen()}><Fullscreen/></TinyButton></div>
         <div className="wv-toolbar"><button className={follow?'active':''} onClick={()=>setFollow(!follow)}><Crosshair/>Follow Player</button><button className={showEntities?'active':''} onClick={()=>setShowEntities(!showEntities)}><Users/>Entities</button><button className={showPath?'active':''} onClick={()=>setShowPath(!showPath)}><Route/>Path</button><button className={showGrid?'active':''} onClick={()=>setShowGrid(!showGrid)}><Grid3X3/>Grid</button><button className={goalMode?'active danger':''} onClick={()=>setGoalMode(!goalMode)}><MapPin/>Set Goal</button></div>

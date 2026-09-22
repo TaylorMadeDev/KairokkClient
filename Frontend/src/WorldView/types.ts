@@ -1,5 +1,5 @@
 export type Vec3 = { x: number; y: number; z: number }
-export type BlockKind = 'grass' | 'plant' | 'dirt' | 'stone' | 'water' | 'wood' | 'leaves' | 'sand' | 'portal' | 'container'
+export type BlockKind = string // Namespaced Minecraft registry ID; legacy cached categories also render.
 export type WorldBlock = Vec3 & { kind: BlockKind }
 export type WorldChunk = { key: string; x: number; z: number; blocks: WorldBlock[]; revision: number }
 export type WorldPlayer = Vec3 & {

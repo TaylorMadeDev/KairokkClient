@@ -107,7 +107,8 @@ public final class ShulkTitleFragment extends Fragment {
 		menu.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
 			positionMenu(menu, root.getHeight()));
 		addFooter(root, context);
-		KairokkMusicPlayer.getInstance().start();
+		// Custom title music is explicitly opt-in and remains off across restarts.
+		if (KairokkCustomizationState.titleMusicEnabled()) KairokkMusicPlayer.getInstance().start();
 		KairokkScreenTransitions.fadeIn(root);
 		KairokkUiSounds.play(KairokkUiSounds.OPEN);
 		return root;
